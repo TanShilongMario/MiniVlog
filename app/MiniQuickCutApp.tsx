@@ -9,6 +9,7 @@ import {
   ImagePlus,
   LoaderCircle,
   Music2,
+  Type,
   Pause,
   Play,
   RefreshCw,
@@ -25,12 +26,15 @@ import {
   TEMPLATES,
   VLOG_DURATION,
   getTemplate,
+  getMusicTrack,
   loadImages,
+  prepareImageSequence,
   previewDimensions,
   renderFrame,
   type PhotoItem,
   type RatioId,
   type TemplateId,
+  type VlogTextContent,
 } from "./vlog-core";
 
 type Step = "photos" | "style" | "preview";
@@ -54,6 +58,7 @@ export function MiniQuickCutApp() {
   const [ratio, setRatio] = useState<RatioId>("16:9");
   const [templateId, setTemplateId] = useState<TemplateId>("wander");
   const [seed, setSeed] = useState(() => Date.now());
+  const [textContent, setTextContent] = useState<VlogTextContent>(() => getTemplate("wander").textPreset);
   const [notice, setNotice] = useState("");
   const addInputRef = useRef<HTMLInputElement>(null);
   const replaceInputRef = useRef<HTMLInputElement>(null);
@@ -136,6 +141,17 @@ export function MiniQuickCutApp() {
     });
   }
 
+  function movePhoto(id: string, direction: -1 | 1) {
+    setPhotos((current) => {
+      const index = current.findIndex((photo) => photo.id === id);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= current.length) return current;
+      const next = [...current];
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  }
+
   function goTo(next: Step) {
     if (next !== "photos" && photos.length < 10) {
       setNotice("至少选择 10 张照片，才能开始成片。");
@@ -191,6 +207,7 @@ export function MiniQuickCutApp() {
           onAddInput={handleAddInput}
           onDropFiles={addFiles}
           onOpenReplace={openReplace}
+          onMove={movePhoto}
           onRemove={removePhoto}
           onReorderOver={reorderOver}
           onReplaceInput={replacePhoto}
@@ -205,7 +222,10 @@ export function MiniQuickCutApp() {
           templateId={templateId}
           onBack={() => goTo("photos")}
           onRatio={setRatio}
-          onTemplate={setTemplateId}
+          onTemplate={(id) => {
+            setTemplateId(id);
+            setTextContent({ ...getTemplate(id).textPreset });
+          }}
           onGenerate={() => {
             setSeed(Date.now());
             goTo("preview");
@@ -219,6 +239,8 @@ export function MiniQuickCutApp() {
           ratio={ratio}
           seed={seed}
           template={template}
+          textContent={textContent}
+          onTextContent={setTextContent}
           onBack={() => goTo("style")}
           onEditPhotos={() => goTo("photos")}
           onRegenerate={() => setSeed(Date.now() + Math.floor(Math.random() * 100_000))}
@@ -236,6 +258,7 @@ type PhotoStepProps = {
   onAddInput: (event: ChangeEvent<HTMLInputElement>) => void;
   onDropFiles: (files: File[]) => void;
   onOpenReplace: (id: string) => void;
+  onMove: (id: string, direction: -1 | 1) => void;
   onRemove: (id: string) => void;
   onReorderOver: (id: string) => void;
   onReplaceInput: (event: ChangeEvent<HTMLInputElement>) => void;
@@ -289,6 +312,8 @@ function PhotoStep(props: PhotoStepProps) {
                 <span className="photo-index">{String(index + 1).padStart(2, "0")}</span>
                 <span className="drag-handle" aria-hidden="true"><GripVertical size={15} /></span>
                 <div className="photo-actions">
+                  <button type="button" disabled={index === 0} onClick={() => props.onMove(photo.id, -1)} aria-label={`将 ${photo.name} 向前移动`}><ArrowLeft size={14} /></button>
+                  <button type="button" disabled={index === props.photos.length - 1} onClick={() => props.onMove(photo.id, 1)} aria-label={`将 ${photo.name} 向后移动`}><ArrowRight size={14} /></button>
                   <button type="button" onClick={() => props.onOpenReplace(photo.id)} aria-label={`替换 ${photo.name}`}><Replace size={15} /></button>
                   <button type="button" onClick={() => props.onRemove(photo.id)} aria-label={`删除 ${photo.name}`}><Trash2 size={15} /></button>
                 </div>
@@ -362,11 +387,12 @@ function StyleStep({ photos, ratio, templateId, onBack, onRatio, onTemplate, onG
           {TEMPLATES.map((template, templateIndex) => (
             <button
               className={`template-card${templateId === template.id ? " is-selected" : ""}`}
+              aria-pressed={templateId === template.id}
               key={template.id}
               type="button"
               onClick={() => onTemplate(template.id)}
             >
-              <div className="template-visual" style={{ "--tone-1": template.colors[0], "--tone-2": template.colors[1], "--tone-3": template.colors[2] } as React.CSSProperties}>
+              <div className={`template-visual template-${template.id}`} style={{ "--tone-1": template.colors[0], "--tone-2": template.colors[1], "--tone-3": template.colors[2] } as React.CSSProperties}>
                 {photos.slice(templateIndex, templateIndex + 3).map((photo, index) => (
                   <img key={photo.id} src={photo.url} alt="" style={{ "--stack-index": index } as React.CSSProperties} />
                 ))}
@@ -376,8 +402,12 @@ function StyleStep({ photos, ratio, templateId, onBack, onRatio, onTemplate, onG
                 <span className="template-number">0{templateIndex + 1}</span>
                 <div><strong>{template.title}</strong><p>{template.description}</p></div>
               </div>
-              <div className="music-line"><Music2 size={14} /><span>{template.musicTitle}</span><small>CC0</small></div>
-              <span className="template-select-mark">{templateId === template.id ? <Check size={14} /> : null}</span>
+              <div className="music-line">
+                <Music2 size={14} />
+                <span>{template.music.length} 首匹配音乐</span>
+                <small>{template.music.some((track) => track.bpm) ? `${Math.min(...template.music.map((track) => track.bpm ?? 999))}–${Math.max(...template.music.map((track) => track.bpm ?? 0))} BPM` : "CC0"}</small>
+              </div>
+              <span className="template-select-mark">{templateId === template.id ? <><Check size={13} /><span>已选择</span></> : null}</span>
             </button>
           ))}
         </div>
@@ -396,30 +426,35 @@ type PreviewStepProps = {
   ratio: RatioId;
   seed: number;
   template: ReturnType<typeof getTemplate>;
+  textContent: VlogTextContent;
+  onTextContent: (content: VlogTextContent) => void;
   onBack: () => void;
   onEditPhotos: () => void;
   onRegenerate: () => void;
 };
 
-function PreviewStep({ photos, ratio, seed, template, onBack, onEditPhotos, onRegenerate }: PreviewStepProps) {
+function PreviewStep({ photos, ratio, seed, template, textContent, onTextContent, onBack, onEditPhotos, onRegenerate }: PreviewStepProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const sourceImagesRef = useRef<HTMLImageElement[]>([]);
   const imagesRef = useRef<HTMLImageElement[]>([]);
   const rafRef = useRef<number | null>(null);
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0);
   const [ready, setReady] = useState(false);
+  const [usedPhotoCount, setUsedPhotoCount] = useState(photos.length);
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
   const [exportError, setExportError] = useState("");
   const dimensions = useMemo(() => previewDimensions(ratio), [ratio]);
+  const musicTrack = useMemo(() => getMusicTrack(template, seed), [template, seed]);
 
   function draw(timestamp: number) {
     const canvas = canvasRef.current;
     if (!canvas || !imagesRef.current.length) return;
     const context = canvas.getContext("2d", { alpha: false });
     if (!context) return;
-    renderFrame(context, canvas.width, canvas.height, imagesRef.current, template, seed, timestamp);
+    renderFrame(context, canvas.width, canvas.height, imagesRef.current, template, seed, timestamp, textContent);
   }
 
   useEffect(() => {
@@ -427,7 +462,10 @@ function PreviewStep({ photos, ratio, seed, template, onBack, onEditPhotos, onRe
     setReady(false);
     loadImages(photos).then((images) => {
       if (canceled) return;
-      imagesRef.current = images;
+      sourceImagesRef.current = images;
+      const prepared = prepareImageSequence(images, template, seed);
+      imagesRef.current = prepared.images;
+      setUsedPhotoCount(prepared.usedCount);
       setReady(true);
       draw(0);
     }).catch(() => setExportError("部分照片读取失败，请返回替换后重试。"));
@@ -437,6 +475,11 @@ function PreviewStep({ photos, ratio, seed, template, onBack, onEditPhotos, onRe
   }, [photos]);
 
   useEffect(() => {
+    if (sourceImagesRef.current.length) {
+      const prepared = prepareImageSequence(sourceImagesRef.current, template, seed);
+      imagesRef.current = prepared.images;
+      setUsedPhotoCount(prepared.usedCount);
+    }
     const audio = audioRef.current;
     if (audio) {
       audio.pause();
@@ -447,6 +490,12 @@ function PreviewStep({ photos, ratio, seed, template, onBack, onEditPhotos, onRe
     draw(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seed, template.id, ratio, dimensions.width, dimensions.height]);
+
+  useEffect(() => {
+    draw(time);
+    // Redraw the current frame while typing without restarting playback.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [textContent]);
 
   useEffect(() => {
     if (!playing) return;
@@ -498,7 +547,7 @@ function PreviewStep({ photos, ratio, seed, template, onBack, onEditPhotos, onRe
     setPlaying(false);
     try {
       const { downloadBlob, exportVlog } = await import("./export-video");
-      const blob = await exportVlog({ photos, ratio, template, seed, onProgress: setExportProgress });
+      const blob = await exportVlog({ photos, ratio, template, seed, textContent, onProgress: setExportProgress });
       const date = new Date().toISOString().slice(0, 10);
       downloadBlob(blob, `MiniQuickCut-${template.id}-${date}.mp4`);
     } catch (error) {
@@ -519,11 +568,13 @@ function PreviewStep({ photos, ratio, seed, template, onBack, onEditPhotos, onRe
           <div className={`canvas-shell ratio-${ratio.replace(":", "-")}`}>
             {!ready && <div className="canvas-loading"><LoaderCircle className="spin" size={24} /> 正在准备照片</div>}
             <canvas ref={canvasRef} width={dimensions.width} height={dimensions.height} aria-label="相册 Vlog 预览" />
-            <button className="big-play" type="button" onClick={togglePlayback} aria-label={playing ? "暂停" : "播放"}>
-              {playing ? <Pause size={22} fill="currentColor" /> : <Play size={22} fill="currentColor" />}
-            </button>
+            {!playing && (
+              <button className="big-play" type="button" onClick={togglePlayback} aria-label="播放">
+                <Play size={22} fill="currentColor" />
+              </button>
+            )}
           </div>
-          <audio ref={audioRef} src={template.music} preload="auto" />
+          <audio ref={audioRef} src={musicTrack.src} preload="auto" />
           <div className="transport">
             <button type="button" onClick={togglePlayback} aria-label={playing ? "暂停" : "播放"}>{playing ? <Pause size={16} /> : <Play size={16} />}</button>
             <span>{formatTime(time)}</span>
@@ -538,16 +589,43 @@ function PreviewStep({ photos, ratio, seed, template, onBack, onEditPhotos, onRe
             <h2>{template.title}</h2>
             <p>{template.description}</p>
           </div>
-          <dl className="result-facts">
-            <div><dt>照片</dt><dd>{photos.length} 张</dd></div>
+          <dl className="result-facts" aria-label="成片规格">
+            <div><dt>照片</dt><dd>{usedPhotoCount} / {photos.length} 张</dd></div>
             <div><dt>画幅</dt><dd>{ratio}</dd></div>
             <div><dt>时长</dt><dd>00:30</dd></div>
             <div><dt>规格</dt><dd>720p · 24fps</dd></div>
           </dl>
           <div className="music-card">
             <span className="music-icon"><Music2 size={18} /></span>
-            <span><small>背景音乐 · CC0</small><strong>{template.musicTitle}</strong></span>
+            <span><small>背景音乐 · CC0{musicTrack.bpm ? ` · ${musicTrack.bpm} BPM` : ""}</small><strong>{musicTrack.title}</strong></span>
             <span className="equalizer"><i /><i /><i /></span>
+          </div>
+          <div className="title-card">
+            <span className="title-icon"><Type size={17} /></span>
+            <div className="title-fields">
+              <small>调整片中文字</small>
+              {([
+                ["title", "封面标题", 24],
+                ["subtitle", template.id === "wander" ? "中段短句 1" : "中段短句", 42],
+                ...(template.id === "wander" ? [
+                  ["subtitle2", "中段短句 2", 42],
+                  ["subtitle3", "中段短句 3", 42],
+                ] as const : []),
+                ["closing", "结尾落款", 42],
+              ] as ReadonlyArray<readonly [keyof VlogTextContent, string, number]>).map(([field, label, limit]) => (
+                <label className="title-field" key={field}>
+                  <span>{label}</span>
+                  <input
+                    type="text"
+                    value={textContent[field] ?? ""}
+                    maxLength={limit}
+                    placeholder={template.textPreset[field] ?? ""}
+                    onChange={(event) => onTextContent({ ...textContent, [field]: event.target.value })}
+                    aria-label={label}
+                  />
+                </label>
+              ))}
+            </div>
           </div>
           {exporting && (
             <div className="export-progress" role="status">

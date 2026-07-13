@@ -15,7 +15,10 @@ import {
   type PhotoItem,
   type RatioId,
   type VlogTemplate,
+  type VlogTextContent,
+  getMusicTrack,
   loadImages,
+  prepareImageSequence,
   renderFrame,
 } from "./vlog-core";
 
@@ -24,6 +27,7 @@ type ExportOptions = {
   ratio: RatioId;
   template: VlogTemplate;
   seed: number;
+  textContent?: VlogTextContent;
   onProgress: (progress: number) => void;
 };
 
@@ -59,7 +63,7 @@ async function prepareAudio(src: string) {
   }
 }
 
-export async function exportVlog({ photos, ratio, template, seed, onProgress }: ExportOptions) {
+export async function exportVlog({ photos, ratio, template, seed, textContent = template.textPreset, onProgress }: ExportOptions) {
   const size = RATIOS[ratio];
   if (!(await canEncodeVideo("avc", { width: size.width, height: size.height, bitrate: 3_200_000 }))) {
     throw new Error("当前浏览器无法编码 H.264 MP4。请使用最新版 Chrome、Edge 或 Safari。");
@@ -70,8 +74,10 @@ export async function exportVlog({ photos, ratio, template, seed, onProgress }: 
     aacFallbackRegistered = true;
   }
 
-  const images = await loadImages(photos);
-  const audioBuffer = await prepareAudio(template.music);
+  const loadedImages = await loadImages(photos);
+  const images = prepareImageSequence(loadedImages, template, seed).images;
+  const musicTrack = getMusicTrack(template, seed);
+  const audioBuffer = await prepareAudio(musicTrack.src);
   const canvas = document.createElement("canvas");
   canvas.width = size.width;
   canvas.height = size.height;
@@ -100,7 +106,7 @@ export async function exportVlog({ photos, ratio, template, seed, onProgress }: 
     const frameDuration = 1 / EXPORT_FPS;
     for (let frame = 0; frame < totalFrames; frame += 1) {
       const timestamp = frame * frameDuration;
-      renderFrame(context, size.width, size.height, images, template, seed, timestamp);
+      renderFrame(context, size.width, size.height, images, template, seed, timestamp, textContent);
       await videoSource.add(timestamp, frameDuration, { keyFrame: frame % (EXPORT_FPS * 2) === 0 });
       if (frame % 6 === 0 || frame === totalFrames - 1) onProgress((frame + 1) / totalFrames);
     }
@@ -123,4 +129,3 @@ export function downloadBlob(blob: Blob, filename: string) {
   link.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 2_000);
 }
-
