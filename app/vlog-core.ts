@@ -3,6 +3,8 @@ import { renderBook3D } from "./book-three";
 export const VLOG_DURATION = 30;
 export const PREVIEW_LONG_EDGE = 720;
 export const EXPORT_FPS = 24;
+export const MIN_PHOTOS = 10;
+export const MAX_PHOTOS = 30;
 
 export type RatioId = "16:9" | "9:16" | "4:3" | "3:4";
 export type TemplateId = "wander" | "memory" | "spark" | "film" | "still";
@@ -110,20 +112,26 @@ export const TEMPLATES: VlogTemplate[] = [
       { title: "Bouncy Gypsy Beats", src: "/music/bouncy-gypsy-beats.mp3", bpm: 92.29, beatOffset: 0.28 },
     ],
     layout: "beat",
-    minShotDuration: 1.3,
+    minShotDuration: 1.0,
     transition: 0,
     zoomMin: 1.07,
     zoomMax: 1.135,
     panStrength: 0.7,
     motions: ["zoom-in", "pan-side", "pan-up", "zoom-out", "zoom-in"],
     colors: ["#e7f0ff", "#a8baff", "#5159a7"],
-    textPreset: { title: "快乐发生中", subtitle: "GOOD TIMES · GOOD VIBES", closing: "精彩，未完待续！" },
+    textPreset: {
+      title: "",
+      subtitle: "快乐发生中",
+      subtitle2: "这一刻刚刚好",
+      subtitle3: "继续闪光吧",
+      closing: "",
+    },
   },
   {
     id: "film",
     title: "翻页手记",
     eyebrow: "TRAVEL BOOK",
-    description: "一本悬浮的旅行画册，跟随音乐翻页，交替呈现跨页与双页照片。",
+    description: "一本圆角网格纸旅行手帐，随音乐翻页，用跨页照片、注脚、页签与贴标收下沿途瞬间。",
     music: [
       { title: "African Moon", src: "/music/african-moon.mp3", bpm: 80.75, beatOffset: 0.71 },
       { title: "Another Grappa, Monsieur?", src: "/music/another-grappa.mp3", bpm: 112.35, beatOffset: 0 },
@@ -247,7 +255,10 @@ export function prepareImageSequence(images: HTMLImageElement[], template: VlogT
 
   const features = images.map(getImageFeature);
   const minimumCount = Math.min(10, images.length);
-  const maximumCount = Math.max(minimumCount, Math.floor(VLOG_DURATION / template.minShotDuration));
+  // Spark's four-flash bursts benefit from keeping as many photos as the user uploaded.
+  const maximumCount = template.id === "spark"
+    ? images.length
+    : Math.max(minimumCount, Math.floor(VLOG_DURATION / template.minShotDuration));
   const desiredCount = Math.min(images.length, maximumCount);
   const distinctIndices: number[] = [];
   const omittedIndices: number[] = [];
@@ -546,6 +557,270 @@ function getBeatAlignedClipTiming(photoCount: number, time: number, music: Music
   };
 }
 
+type SparkPlacement = "full" | { x: number; y: number; w: number; h: number };
+
+type SparkRgb = { r: number; g: number; b: number };
+
+type SparkBeatSlot = {
+  imageIndex: number;
+  placement: SparkPlacement;
+  progress: number;
+  burst?: boolean;
+};
+
+type SparkPlanCache = {
+  key: string;
+  slots: SparkBeatSlot[];
+  background: SparkRgb;
+  imageWashes: SparkRgb[];
+};
+
+const sparkPlanCache = new WeakMap<HTMLImageElement[], SparkPlanCache>();
+
+function rectPlacement(x: number, y: number, w: number, h: number): SparkPlacement {
+  return { x, y, w, h };
+}
+
+/** Inset frames keep light breathing room; size and side bias stay seeded-random. */
+function randomSparkInset(random: () => number, landscape: boolean): SparkPlacement {
+  if (landscape) {
+    const top = 0.05 + random() * 0.09;
+    const bottom = 0.05 + random() * 0.09;
+    let height = 1 - top - bottom;
+    if (random() < 0.28) height *= 0.82 + random() * 0.14;
+    height = clamp(height, 0.52, 0.9);
+    const freey = Math.max(0, 1 - top - bottom - height);
+    const y = top + freey * (random() < 0.55 ? 0 : random());
+    const width = 0.36 + random() * 0.42;
+    const maxX = Math.max(0, 1 - width);
+    const align = random();
+    const x = align < 0.38
+      ? random() * Math.min(0.08, maxX)
+      : align < 0.76
+        ? maxX - random() * Math.min(0.08, maxX)
+        : maxX * (0.22 + random() * 0.56);
+    return rectPlacement(clamp(x, 0, maxX), clamp(y, 0.04, 0.32), width, height);
+  }
+
+  const left = 0.04 + random() * 0.08;
+  const right = 0.04 + random() * 0.08;
+  let width = 1 - left - right;
+  if (random() < 0.28) width *= 0.84 + random() * 0.14;
+  width = clamp(width, 0.62, 0.92);
+  const freex = Math.max(0, 1 - left - right - width);
+  const x = left + freex * random();
+  const height = 0.38 + random() * 0.4;
+  const maxY = Math.max(0.05, 1 - height - 0.05);
+  const align = random();
+  const y = align < 0.4
+    ? 0.05 + random() * 0.05
+    : align < 0.8
+      ? maxY - random() * 0.05
+      : 0.1 + random() * Math.max(0.04, maxY - 0.14);
+  return rectPlacement(clamp(x, 0.03, 0.24), clamp(y, 0.04, maxY), width, clamp(height, 0.36, 0.78));
+}
+
+function pickSparkPlacement(random: () => number, landscape: boolean, fullChance = 0.12): SparkPlacement {
+  if (random() < fullChance) return "full";
+  return randomSparkInset(random, landscape);
+}
+
+function rgbToHsl(red: number, green: number, blue: number): [number, number, number] {
+  const max = Math.max(red, green, blue);
+  const min = Math.min(red, green, blue);
+  const light = (max + min) / 2;
+  if (max === min) return [0, 0, light];
+  const delta = max - min;
+  const sat = light > 0.5 ? delta / (2 - max - min) : delta / (max + min);
+  let hue = 0;
+  if (max === red) hue = (green - blue) / delta + (green < blue ? 6 : 0);
+  else if (max === green) hue = (blue - red) / delta + 2;
+  else hue = (red - green) / delta + 4;
+  return [hue / 6, sat, light];
+}
+
+function hslToRgb(hue: number, sat: number, light: number): SparkRgb {
+  if (sat === 0) {
+    const gray = Math.round(light * 255);
+    return { r: gray, g: gray, b: gray };
+  }
+  const hue2rgb = (parcel: number, quilt: number, turn: number) => {
+    let value = turn;
+    if (value < 0) value += 1;
+    if (value > 1) value -= 1;
+    if (value < 1 / 6) return parcel + (quilt - parcel) * 6 * value;
+    if (value < 1 / 2) return quilt;
+    if (value < 2 / 3) return parcel + (quilt - parcel) * (2 / 3 - value) * 6;
+    return parcel;
+  };
+  const quilt = light < 0.5 ? light * (1 + sat) : light + sat - light * sat;
+  const parcel = 2 * light - quilt;
+  return {
+    r: Math.round(hue2rgb(parcel, quilt, hue + 1 / 3) * 255),
+    g: Math.round(hue2rgb(parcel, quilt, hue) * 255),
+    b: Math.round(hue2rgb(parcel, quilt, hue - 1 / 3) * 255),
+  };
+}
+
+function tuneSparkWash(red: number, green: number, blue: number): SparkRgb {
+  const [hue, sat, light] = rgbToHsl(red / 255, green / 255, blue / 255);
+  // Push chroma up so the matte field still carries the photo's color identity.
+  const nextSat = clamp(sat * 1.45 + 0.1, 0.22, 0.78);
+  const nextLight = clamp(light * 0.72 + 0.2, 0.24, 0.46);
+  return hslToRgb(hue, nextSat, nextLight);
+}
+
+function sampleImageWash(image: HTMLImageElement, random: () => number): SparkRgb {
+  const size = 36;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) return { r: 42, g: 58, b: 52 };
+
+  drawStaticCover(context, image, 0, 0, size, size);
+  const data = context.getImageData(0, 0, size, size).data;
+  let red = 0;
+  let green = 0;
+  let blue = 0;
+  const samples = 14;
+  for (let index = 0; index < samples; index += 1) {
+    const pixel = (Math.floor(random() * size) * size + Math.floor(random() * size)) * 4;
+    red += data[pixel];
+    green += data[pixel + 1];
+    blue += data[pixel + 2];
+  }
+  return tuneSparkWash(red / samples, green / samples, blue / samples);
+}
+
+function sampleSparkBackground(images: HTMLImageElement[], seed: number): SparkRgb {
+  const random = mulberry32(seed ^ 0xc0ffee11);
+  const image = images[Math.floor(random() * images.length)] ?? images[0];
+  if (!image) return { r: 42, g: 58, b: 52 };
+  return sampleImageWash(image, random);
+}
+
+function sparkRgbCss(color: SparkRgb) {
+  return `rgb(${color.r}, ${color.g}, ${color.b})`;
+}
+
+function pulseSparkWash(color: SparkRgb, attack: number): SparkRgb {
+  const amount = clamp(attack, 0, 1);
+  return {
+    r: Math.round(clamp(color.r + (255 - color.r) * amount * 0.42 + amount * 18, 0, 255)),
+    g: Math.round(clamp(color.g + (255 - color.g) * amount * 0.42 + amount * 18, 0, 255)),
+    b: Math.round(clamp(color.b + (255 - color.b) * amount * 0.38 + amount * 14, 0, 255)),
+  };
+}
+
+function pickSparkPhoto(
+  photoCount: number,
+  recent: number[],
+  random: () => number,
+  minGap = 5,
+  exclude: number[] = [],
+) {
+  const blocked = new Set([...recent.slice(-minGap), ...exclude]);
+  const fresh: number[] = [];
+  const reusable: number[] = [];
+  for (let index = 0; index < photoCount; index += 1) {
+    if (exclude.includes(index)) continue;
+    if (!recent.includes(index)) fresh.push(index);
+    else if (!blocked.has(index)) reusable.push(index);
+  }
+  const pool = fresh.length ? fresh : reusable.length ? reusable : Array.from({ length: photoCount }, (_, index) => index)
+    .filter((index) => !exclude.includes(index));
+  if (!pool.length) return Math.floor(random() * photoCount) % photoCount;
+  return pool[Math.floor(random() * pool.length)];
+}
+
+function buildSparkBeatSlots(photoCount: number, totalBeats: number, seed: number, landscape: boolean): SparkBeatSlot[] {
+  const random = mulberry32(seed ^ 0x51a7f00d);
+  const recent: number[] = [];
+  const slots: SparkBeatSlot[] = [];
+  let beat = 0;
+
+  const pushHold = (imageIndex: number, placement: SparkPlacement, holdBeats: number) => {
+    for (let step = 0; step < holdBeats; step += 1) {
+      slots.push({ imageIndex, placement, progress: (step + 0.5) / holdBeats });
+    }
+    recent.push(imageIndex);
+  };
+
+  // Opening always starts with a four-beat fullscreen burst.
+  if (totalBeats >= 4 && photoCount >= 1) {
+    const openerImages: number[] = [];
+    for (let step = 0; step < 4; step += 1) {
+      const imageIndex = pickSparkPhoto(photoCount, recent, random, 5, openerImages);
+      openerImages.push(imageIndex);
+      slots.push({ imageIndex, placement: "full", progress: 0.5, burst: true });
+      recent.push(imageIndex);
+    }
+    beat += 4;
+  }
+
+  while (beat < totalBeats) {
+    const remaining = totalBeats - beat;
+    const roll = random();
+
+    if (remaining >= 4 && photoCount >= 4 && roll < 0.28) {
+      const burstImages: number[] = [];
+      for (let step = 0; step < 4; step += 1) {
+        const imageIndex = pickSparkPhoto(photoCount, recent, random, 5, burstImages);
+        burstImages.push(imageIndex);
+        // Bursts stay punchy; a modest full-bleed chance keeps energy without flooding the cut.
+        slots.push({ imageIndex, placement: pickSparkPlacement(random, landscape, 0.22), progress: 0.5, burst: true });
+        recent.push(imageIndex);
+      }
+      beat += 4;
+      continue;
+    }
+
+    // Four-beat relocate: four different photos, varying size and position, always with margin.
+    if (remaining >= 4 && photoCount >= 2 && roll < 0.54) {
+      const relocateImages: number[] = [];
+      for (let step = 0; step < 4; step += 1) {
+        const imageIndex = pickSparkPhoto(photoCount, recent, random, 5, relocateImages);
+        relocateImages.push(imageIndex);
+        slots.push({
+          imageIndex,
+          placement: randomSparkInset(random, landscape),
+          progress: 0.5,
+        });
+        recent.push(imageIndex);
+      }
+      beat += 4;
+      continue;
+    }
+
+    const holdBeats = Math.min(remaining, remaining <= 3 ? remaining : 2 + Math.floor(random() * 3));
+    const imageIndex = pickSparkPhoto(photoCount, recent, random, 5);
+    pushHold(imageIndex, pickSparkPlacement(random, landscape), holdBeats);
+    beat += holdBeats;
+  }
+
+  return slots;
+}
+
+function getSparkPlan(images: HTMLImageElement[], seed: number, bpm: number, offset: number, width: number, height: number) {
+  const beatDuration = 60 / bpm;
+  const totalBeats = Math.max(images.length, Math.floor((VLOG_DURATION - offset) / beatDuration) + 1);
+  const landscape = width >= height;
+  const key = `${seed}:${bpm}:${offset}:${totalBeats}:${landscape ? "l" : "p"}:${images.length}`;
+  const cached = sparkPlanCache.get(images);
+  if (cached?.key === key) return cached;
+
+  const washRandom = mulberry32(seed ^ 0xa11ce);
+  const plan: SparkPlanCache = {
+    key,
+    slots: buildSparkBeatSlots(images.length, totalBeats, seed, landscape),
+    background: sampleSparkBackground(images, seed),
+    imageWashes: images.map((image) => sampleImageWash(image, washRandom)),
+  };
+  sparkPlanCache.set(images, plan);
+  return plan;
+}
+
 function drawBeatFrame(
   context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
   images: HTMLImageElement[],
@@ -556,57 +831,50 @@ function drawBeatFrame(
   time: number,
 ) {
   const music = getMusicTrack(template, seed);
-  const timing = getBeatTiming(images.length, time, music.bpm, music.beatOffset);
-  const image = images[timing.index];
-  const pulse = timing.started ? Math.exp(-timing.beatPhase * 8) * (timing.strongBeat ? 0.045 : 0.018) : 0;
-  const variant = timing.index % 3;
+  const bpm = music.bpm ?? 92;
+  const offset = music.beatOffset ?? 0.28;
+  const beatDuration = 60 / bpm;
+  const plan = getSparkPlan(images, seed, bpm, offset, width, height);
+  const started = time >= offset;
+  const beatPosition = started ? (time - offset) / beatDuration : 0;
+  const beat = Math.max(0, Math.min(plan.slots.length - 1, Math.floor(beatPosition)));
+  const beatPhase = started ? beatPosition - Math.floor(beatPosition) : 1;
+  const slot = plan.slots[beat] ?? plan.slots[0];
+  const image = images[slot.imageIndex] ?? images[0];
+  const pulse = started ? Math.exp(-beatPhase * 8) * (beat % 4 === 0 ? 0.04 : 0.016) : 0;
+  const burstAttack = slot.burst && started ? Math.exp(-beatPhase * 11) : 0;
+  const wash = slot.burst
+    ? pulseSparkWash(plan.imageWashes[slot.imageIndex] ?? plan.background, burstAttack)
+    : plan.background;
 
-  if (variant === 0) {
-    drawCover(context, image, width, height, timing.progress, template, seed, timing.index, 1, pulse);
-  } else {
-    const palettes = variant === 1
-      ? ["#d7ff58", "#20231c", "#f4f3ed"]
-      : ["#8fa5ff", "#171927", "#f7e861"];
-    context.fillStyle = palettes[1];
-    context.fillRect(0, 0, width, height);
+  context.fillStyle = sparkRgbCss(wash);
+  context.fillRect(0, 0, width, height);
+  if (!image) return;
 
-    const insetX = variant === 1 ? width * 0.07 : width * 0.18;
-    const insetY = variant === 1 ? height * 0.13 : height * 0.055;
-    const insetWidth = variant === 1 ? width * 0.86 : width * 0.72;
-    const insetHeight = variant === 1 ? height * 0.72 : height * 0.89;
-    const pulseScale = 1 + pulse;
-
-    context.save();
-    context.translate(width / 2, height / 2);
-    context.scale(pulseScale, pulseScale);
-    context.translate(-width / 2, -height / 2);
-    context.shadowColor = "rgba(0, 0, 0, 0.32)";
-    context.shadowBlur = Math.max(16, Math.min(width, height) * 0.035);
-    context.fillStyle = palettes[2];
-    context.fillRect(insetX - width * 0.012, insetY - width * 0.012, insetWidth + width * 0.024, insetHeight + width * 0.024);
-    context.shadowColor = "transparent";
-    context.save();
-    context.beginPath();
-    context.rect(insetX, insetY, insetWidth, insetHeight);
-    context.clip();
-    drawStaticCover(context, image, insetX, insetY, insetWidth, insetHeight, 1.02);
-    context.restore();
-    context.restore();
-
-    context.fillStyle = palettes[0];
-    if (variant === 1) {
-      context.fillRect(width * 0.07, height * 0.89, width * (0.2 + (timing.beat % 4) * 0.08), Math.max(5, height * 0.014));
-    } else {
-      context.fillRect(width * 0.055, height * 0.13, Math.max(5, width * 0.015), height * 0.42);
-      context.fillRect(width * 0.055, height * 0.13, width * 0.095, Math.max(5, height * 0.014));
+  if (slot.placement === "full") {
+    drawCover(context, image, width, height, slot.progress, template, seed, slot.imageIndex, 1, pulse);
+    if (burstAttack > 0.02) {
+      context.fillStyle = `rgba(${wash.r}, ${wash.g}, ${wash.b}, ${burstAttack * 0.28})`;
+      context.fillRect(0, 0, width, height);
     }
+    return;
   }
 
-  if (timing.started) {
-    const flash = Math.exp(-timing.beatPhase * 16) * (timing.strongBeat ? 0.18 : 0.055);
-    context.fillStyle = `rgba(255, 255, 255, ${flash})`;
-    context.fillRect(0, 0, width, height);
-  }
+  const insetX = slot.placement.x * width;
+  const insetY = slot.placement.y * height;
+  const insetWidth = slot.placement.w * width;
+  const insetHeight = slot.placement.h * height;
+  const pulseScale = 1 + pulse;
+
+  context.save();
+  context.translate(width / 2, height / 2);
+  context.scale(pulseScale, pulseScale);
+  context.translate(-width / 2, -height / 2);
+  context.beginPath();
+  context.rect(insetX, insetY, insetWidth, insetHeight);
+  context.clip();
+  drawStaticCover(context, image, insetX, insetY, insetWidth, insetHeight, 1.02);
+  context.restore();
 }
 
 function drawContainedPhoto(
@@ -755,8 +1023,9 @@ function drawBookFrame(
   height: number,
   progress: number,
   time: number,
+  seed: number,
 ) {
-  const bookCanvas = renderBook3D(images, spreadIndex, width, height, progress, time);
+  const bookCanvas = renderBook3D(images, spreadIndex, width, height, progress, time, seed);
   context.drawImage(bookCanvas, 0, 0, width, height);
 }
 
@@ -782,6 +1051,91 @@ function drawTrackedText(
   return totalWidth;
 }
 
+function getSparkHandFontFamily() {
+  // Canvas cannot resolve CSS vars inside font strings — read the concrete family.
+  if (typeof document !== "undefined") {
+    const maShan = getComputedStyle(document.documentElement).getPropertyValue("--font-ma-shan").trim();
+    if (maShan) return `${maShan}, "Ma Shan Zheng", "Segoe Script", "KaiTi", "STKaiti", cursive`;
+  }
+  return '"Ma Shan Zheng", "Segoe Script", "KaiTi", "STKaiti", cursive';
+}
+
+function sparkCornerOrder(seed: number): Array<0 | 1 | 2 | 3> {
+  const order: Array<0 | 1 | 2 | 3> = [0, 1, 2, 3];
+  const random = mulberry32(seed ^ 0x7e4c091);
+  for (let index = order.length - 1; index > 0; index -= 1) {
+    const swap = Math.floor(random() * (index + 1));
+    [order[index], order[swap]] = [order[swap], order[index]];
+  }
+  return order;
+}
+
+function drawSparkCornerText(
+  context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+  text: string,
+  width: number,
+  height: number,
+  corner: 0 | 1 | 2 | 3,
+  alpha: number,
+) {
+  if (!text || alpha <= 0) return;
+
+  const shortEdge = Math.min(width, height);
+  const pad = shortEdge * 0.055;
+  const maxWidth = width * 0.42;
+  let fontSize = shortEdge * 0.052;
+  const family = getSparkHandFontFamily();
+  context.save();
+  context.globalAlpha = alpha;
+  context.fillStyle = "#ffffff";
+  context.font = `${fontSize}px ${family}`;
+
+  while (fontSize > shortEdge * 0.03 && context.measureText(text).width > maxWidth) {
+    fontSize *= 0.92;
+    context.font = `${fontSize}px ${family}`;
+  }
+
+  const left = corner === 0 || corner === 2;
+  const top = corner === 0 || corner === 1;
+  context.textAlign = left ? "left" : "right";
+  context.textBaseline = top ? "top" : "bottom";
+
+  const x = left ? pad : width - pad;
+  const y = top ? pad : height - pad;
+  const tilt = (left ? -1 : 1) * (top ? 0.035 : -0.03);
+
+  context.translate(x, y);
+  context.rotate(tilt);
+  context.shadowColor = "rgba(0, 0, 0, 0.28)";
+  context.shadowBlur = shortEdge * 0.012;
+  context.shadowOffsetY = shortEdge * 0.004;
+  context.fillText(text, 0, 0, maxWidth);
+  context.restore();
+}
+
+function drawSparkTypography(
+  context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+  width: number,
+  height: number,
+  content: VlogTextContent,
+  time: number,
+  seed: number,
+) {
+  const segment = VLOG_DURATION / 3;
+  const cues = [
+    { text: content.subtitle.trim().slice(0, 18), start: 0, end: segment },
+    { text: (content.subtitle2 ?? "").trim().slice(0, 18), start: segment, end: segment * 2 },
+    { text: (content.subtitle3 ?? "").trim().slice(0, 18), start: segment * 2, end: VLOG_DURATION },
+  ];
+  const corners = sparkCornerOrder(seed);
+  cues.forEach((cue, index) => {
+    if (!cue.text) return;
+    const alpha = phaseEnvelope(time, cue.start, cue.end, 0.45, 0.45);
+    if (alpha <= 0) return;
+    drawSparkCornerText(context, cue.text, width, height, corners[index] ?? 0, alpha);
+  });
+}
+
 function drawTemplateTypography(
   context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
   width: number,
@@ -789,7 +1143,14 @@ function drawTemplateTypography(
   template: VlogTemplate,
   content: VlogTextContent,
   time: number,
+  seed = 0,
 ) {
+  if (String(template.id) === "film") return;
+  if (template.id === "spark") {
+    drawSparkTypography(context, width, height, content, time, seed);
+    return;
+  }
+
   const title = content.title.trim().slice(0, 24);
   const subtitle = content.subtitle.trim().slice(0, 42);
   const subtitle2 = content.subtitle2?.trim().slice(0, 42) ?? "";
@@ -850,21 +1211,6 @@ function drawTemplateTypography(
       context.fillStyle = "#a37862";
       context.fillText("MEMORIES, KEPT WITH CARE", cardWidth * 0.08, cardHeight * 0.76);
       context.setTransform(1, 0, 0, 1, 0, 0);
-    } else if (template.id === "spark") {
-      const punch = 0.86 + enter * 0.14;
-      context.translate(width / 2, height / 2);
-      context.scale(punch, punch);
-      context.translate(-width / 2, -height / 2);
-      context.globalAlpha = coverAlpha * 0.9;
-      context.fillStyle = "#171927";
-      context.fillRect(width * 0.07, height * 0.34, width * 0.86 * enter, shortEdge * 0.22);
-      context.globalAlpha = coverAlpha;
-      context.fillStyle = "#f7e861";
-      context.textAlign = "center";
-      context.font = `900 ${shortEdge * 0.09}px system-ui, "PingFang SC", sans-serif`;
-      context.fillText(title, width / 2, height * 0.45);
-      context.fillStyle = "#d7ff58";
-      context.fillRect(width * 0.16, height * 0.59, width * 0.68 * enter, Math.max(5, shortEdge * 0.014));
     } else if (template.id === "film") {
       context.globalAlpha = coverAlpha;
       context.fillStyle = "#3158bd";
@@ -907,13 +1253,6 @@ function drawTemplateTypography(
       context.fillStyle = "#ffffff";
       context.textAlign = "center";
       context.fillText(middleText, width / 2 + direction * (1 - enter) * width * 0.035, height * cueY + shortEdge * 0.043);
-    } else if (template.id === "spark") {
-      context.fillStyle = "#d7ff58";
-      context.fillRect(width * (0.08 - (1 - enter) * 0.12), height * 0.76, width * 0.84, shortEdge * 0.105);
-      context.fillStyle = "#171927";
-      context.font = `850 ${shortEdge * 0.031}px system-ui, sans-serif`;
-      context.textAlign = "center";
-      context.fillText(middleText, width / 2, height * 0.812);
     } else if (template.id === "film") {
       context.font = `650 ${shortEdge * 0.026}px Georgia, "Songti SC", serif`;
       context.fillStyle = "rgba(246, 240, 223, 0.96)";
@@ -941,11 +1280,11 @@ function drawTemplateTypography(
     context.fillStyle = template.id === "still" || template.id === "memory" ? "#f4f0e7" : "#11120f";
     context.fillRect(0, 0, width, height);
     context.globalAlpha = closingAlpha;
-    context.fillStyle = template.id === "spark" ? "#d7ff58" : template.id === "film" ? "#3158bd" : template.id === "memory" || template.id === "still" ? "#514d45" : "#ffffff";
+    context.fillStyle = template.id === "film" ? "#3158bd" : template.id === "memory" || template.id === "still" ? "#514d45" : "#ffffff";
     context.textAlign = "center";
     const family = template.id === "memory" || template.id === "still" || template.id === "film" ? 'Georgia, "Songti SC", serif' : 'system-ui, "PingFang SC", sans-serif';
-    const weight = template.id === "spark" ? 900 : template.id === "still" ? 500 : 700;
-    context.font = `${weight} ${shortEdge * (template.id === "spark" ? 0.061 : 0.041)}px ${family}`;
+    const weight = template.id === "still" ? 500 : 700;
+    context.font = `${weight} ${shortEdge * 0.041}px ${family}`;
     context.fillText(closing, width / 2, height * 0.5 + (1 - enter) * height * 0.045);
     context.globalAlpha = closingAlpha * 0.65;
     context.font = `600 ${shortEdge * 0.014}px ui-monospace, monospace`;
@@ -1017,7 +1356,7 @@ export function renderFrame(
   const safeTime = clamp(time, 0, VLOG_DURATION - 0.0001);
   if (template.layout === "beat") {
     drawBeatFrame(context, images, width, height, template, seed, safeTime);
-    drawTemplateTypography(context, width, height, template, textContent, safeTime);
+    drawTemplateTypography(context, width, height, template, textContent, safeTime, seed);
     return;
   }
 
@@ -1025,8 +1364,8 @@ export function renderFrame(
   if (template.layout === "book") {
     const spreadCount = Math.max(1, Math.ceil(images.length / 2));
     const timing = getBeatAlignedClipTiming(spreadCount, safeTime, music);
-    drawBookFrame(context, images, timing.index, width, height, timing.localProgress, safeTime);
-    drawTemplateTypography(context, width, height, template, textContent, safeTime);
+    drawBookFrame(context, images, timing.index, width, height, timing.localProgress, safeTime, seed);
+    drawTemplateTypography(context, width, height, template, textContent, safeTime, seed);
     return;
   }
 
@@ -1063,5 +1402,5 @@ export function renderFrame(
       drawCover(context, images[index + 1], width, height, incomingProgress, template, seed, index + 1, mix);
     }
   }
-  drawTemplateTypography(context, width, height, template, textContent, safeTime);
+  drawTemplateTypography(context, width, height, template, textContent, safeTime, seed);
 }

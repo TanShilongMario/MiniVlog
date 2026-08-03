@@ -74,6 +74,9 @@ export async function exportVlog({ photos, ratio, template, seed, textContent = 
     aacFallbackRegistered = true;
   }
 
+  if (typeof document !== "undefined" && document.fonts) {
+    await document.fonts.ready.catch(() => undefined);
+  }
   const loadedImages = await loadImages(photos);
   const images = prepareImageSequence(loadedImages, template, seed).images;
   const musicTrack = getMusicTrack(template, seed);

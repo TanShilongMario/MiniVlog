@@ -22,6 +22,8 @@ import {
 } from "lucide-react";
 import { type ChangeEvent, type DragEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
+  MAX_PHOTOS,
+  MIN_PHOTOS,
   RATIOS,
   TEMPLATES,
   VLOG_DURATION,
@@ -80,10 +82,10 @@ export function MiniQuickCutApp() {
 
   function addFiles(files: File[]) {
     const accepted = files.filter(isAcceptedImage);
-    const available = Math.max(0, 20 - photos.length);
+    const available = Math.max(0, MAX_PHOTOS - photos.length);
     const selected = accepted.slice(0, available);
     if (!selected.length) {
-      setNotice(available === 0 ? "已经选满 20 张照片。" : "请选择 JPEG、PNG 或 WebP 照片。");
+      setNotice(available === 0 ? `已经选满 ${MAX_PHOTOS} 张照片。` : "请选择 JPEG、PNG 或 WebP 照片。");
       return;
     }
     const next = selected.map((file) => ({ id: makeId(), file, name: file.name, url: URL.createObjectURL(file) }));
@@ -153,8 +155,8 @@ export function MiniQuickCutApp() {
   }
 
   function goTo(next: Step) {
-    if (next !== "photos" && photos.length < 10) {
-      setNotice("至少选择 10 张照片，才能开始成片。");
+    if (next !== "photos" && photos.length < MIN_PHOTOS) {
+      setNotice(`至少选择 ${MIN_PHOTOS} 张照片，才能开始成片。`);
       setStep("photos");
       return;
     }
@@ -267,7 +269,7 @@ type PhotoStepProps = {
 
 function PhotoStep(props: PhotoStepProps) {
   const [draggingFiles, setDraggingFiles] = useState(false);
-  const remaining = Math.max(0, 10 - props.photos.length);
+  const remaining = Math.max(0, MIN_PHOTOS - props.photos.length);
 
   function handleDrop(event: DragEvent<HTMLElement>) {
     event.preventDefault();
@@ -281,11 +283,11 @@ function PhotoStep(props: PhotoStepProps) {
         <div>
           <p className="eyebrow">STEP 01 · YOUR MOMENTS</p>
           <h1>先把喜欢的瞬间放进来。</h1>
-          <p>选择 10–20 张照片。我们会保留顺序，用轻微运镜把它们连成一段自然的 Vlog。</p>
+          <p>选择 {MIN_PHOTOS}–{MAX_PHOTOS} 张照片。我们会保留顺序，用轻微运镜把它们连成一段自然的 Vlog。</p>
         </div>
         <div className="count-orbit" aria-label={`已选择 ${props.photos.length} 张`}>
           <strong>{String(props.photos.length).padStart(2, "0")}</strong>
-          <span>/ 20</span>
+          <span>/ {MAX_PHOTOS}</span>
         </div>
       </div>
 
@@ -294,7 +296,7 @@ function PhotoStep(props: PhotoStepProps) {
           <button className="empty-dropzone" type="button" onClick={() => props.addInputRef.current?.click()}>
             <span className="upload-orb"><Upload size={24} /></span>
             <strong>选择照片，或拖到这里</strong>
-            <span>JPEG · PNG · WebP · 最多 20 张</span>
+            <span>JPEG · PNG · WebP · 最多 {MAX_PHOTOS} 张</span>
           </button>
         ) : (
           <div className="photo-grid" aria-label="已选照片">
@@ -319,7 +321,7 @@ function PhotoStep(props: PhotoStepProps) {
                 </div>
               </article>
             ))}
-            {props.photos.length < 20 && (
+            {props.photos.length < MAX_PHOTOS && (
               <button className="add-photo-card" type="button" onClick={() => props.addInputRef.current?.click()}>
                 <ImagePlus size={22} />
                 <span>继续添加</span>
@@ -334,7 +336,7 @@ function PhotoStep(props: PhotoStepProps) {
 
       <footer className="stage-footer">
         <div className="quiet-note"><ShieldCheck size={16} /> 原图不会离开你的浏览器</div>
-        <button className="primary-button" type="button" disabled={props.photos.length < 10} onClick={props.onContinue}>
+        <button className="primary-button" type="button" disabled={props.photos.length < MIN_PHOTOS} onClick={props.onContinue}>
           {remaining > 0 ? `还需 ${remaining} 张` : "选择画幅与风格"}
           <ArrowRight size={17} />
         </button>
@@ -460,7 +462,12 @@ function PreviewStep({ photos, ratio, seed, template, textContent, onTextContent
   useEffect(() => {
     let canceled = false;
     setReady(false);
-    loadImages(photos).then((images) => {
+    Promise.all([
+      loadImages(photos),
+      typeof document !== "undefined" && document.fonts
+        ? document.fonts.ready.catch(() => undefined)
+        : Promise.resolve(),
+    ]).then(([images]) => {
       if (canceled) return;
       sourceImagesRef.current = images;
       const prepared = prepareImageSequence(images, template, seed);
@@ -600,19 +607,27 @@ function PreviewStep({ photos, ratio, seed, template, textContent, onTextContent
             <span><small>背景音乐 · CC0{musicTrack.bpm ? ` · ${musicTrack.bpm} BPM` : ""}</small><strong>{musicTrack.title}</strong></span>
             <span className="equalizer"><i /><i /><i /></span>
           </div>
-          <div className="title-card">
+          {template.id !== "film" && <div className="title-card">
             <span className="title-icon"><Type size={17} /></span>
             <div className="title-fields">
               <small>调整片中文字</small>
-              {([
-                ["title", "封面标题", 24],
-                ["subtitle", template.id === "wander" ? "中段短句 1" : "中段短句", 42],
-                ...(template.id === "wander" ? [
-                  ["subtitle2", "中段短句 2", 42],
-                  ["subtitle3", "中段短句 3", 42],
-                ] as const : []),
-                ["closing", "结尾落款", 42],
-              ] as ReadonlyArray<readonly [keyof VlogTextContent, string, number]>).map(([field, label, limit]) => (
+              {(
+                template.id === "spark"
+                  ? ([
+                      ["subtitle", "短句 1", 18],
+                      ["subtitle2", "短句 2", 18],
+                      ["subtitle3", "短句 3", 18],
+                    ] as const)
+                  : ([
+                      ["title", "封面标题", 24],
+                      ["subtitle", template.id === "wander" ? "中段短句 1" : "中段短句", 42],
+                      ...(template.id === "wander" ? [
+                        ["subtitle2", "中段短句 2", 42],
+                        ["subtitle3", "中段短句 3", 42],
+                      ] as const : []),
+                      ["closing", "结尾落款", 42],
+                    ] as const)
+              ).map(([field, label, limit]) => (
                 <label className="title-field" key={field}>
                   <span>{label}</span>
                   <input
@@ -626,7 +641,7 @@ function PreviewStep({ photos, ratio, seed, template, textContent, onTextContent
                 </label>
               ))}
             </div>
-          </div>
+          </div>}
           {exporting && (
             <div className="export-progress" role="status">
               <div><span>正在本地生成 MP4</span><strong>{Math.round(exportProgress * 100)}%</strong></div>
