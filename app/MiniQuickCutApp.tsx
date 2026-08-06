@@ -21,12 +21,14 @@ import {
   X,
 } from "lucide-react";
 import { type ChangeEvent, type DragEvent, useEffect, useMemo, useRef, useState } from "react";
+import { DebugPanel } from "./DebugPanel";
 import {
   MAX_PHOTOS,
   MIN_PHOTOS,
   RATIOS,
   TEMPLATES,
   VLOG_DURATION,
+  buildVlogDebugSnapshot,
   getTemplate,
   getMusicTrack,
   loadImages,
@@ -36,10 +38,11 @@ import {
   type PhotoItem,
   type RatioId,
   type TemplateId,
+  type VlogDebugSnapshot,
   type VlogTextContent,
 } from "./vlog-core";
 
-type Step = "photos" | "style" | "preview";
+type Step = "photos" | "style" | "preview" | "debug";
 const STEPS: { id: Step; index: string; label: string }[] = [
   { id: "photos", index: "01", label: "选择照片" },
   { id: "style", index: "02", label: "挑选风格" },
@@ -245,6 +248,7 @@ export function MiniQuickCutApp() {
           onTextContent={setTextContent}
           onBack={() => goTo("style")}
           onEditPhotos={() => goTo("photos")}
+          onSeedChange={setSeed}
           onRegenerate={() => setSeed(Date.now() + Math.floor(Math.random() * 100_000))}
         />
       )}
@@ -432,10 +436,11 @@ type PreviewStepProps = {
   onTextContent: (content: VlogTextContent) => void;
   onBack: () => void;
   onEditPhotos: () => void;
+  onSeedChange: (seed: number) => void;
   onRegenerate: () => void;
 };
 
-function PreviewStep({ photos, ratio, seed, template, textContent, onTextContent, onBack, onEditPhotos, onRegenerate }: PreviewStepProps) {
+function PreviewStep({ photos, ratio, seed, template, textContent, onTextContent, onBack, onEditPhotos, onSeedChange, onRegenerate }: PreviewStepProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const sourceImagesRef = useRef<HTMLImageElement[]>([]);
@@ -448,6 +453,7 @@ function PreviewStep({ photos, ratio, seed, template, textContent, onTextContent
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
   const [exportError, setExportError] = useState("");
+  const [debugSnapshot, setDebugSnapshot] = useState<VlogDebugSnapshot | null>(null);
   const dimensions = useMemo(() => previewDimensions(ratio), [ratio]);
   const musicTrack = useMemo(() => getMusicTrack(template, seed), [template, seed]);
 
@@ -473,6 +479,7 @@ function PreviewStep({ photos, ratio, seed, template, textContent, onTextContent
       const prepared = prepareImageSequence(images, template, seed);
       imagesRef.current = prepared.images;
       setUsedPhotoCount(prepared.usedCount);
+      setDebugSnapshot(buildVlogDebugSnapshot(images, template, seed, ratio));
       setReady(true);
       draw(0);
     }).catch(() => setExportError("部分照片读取失败，请返回替换后重试。"));
@@ -486,6 +493,7 @@ function PreviewStep({ photos, ratio, seed, template, textContent, onTextContent
       const prepared = prepareImageSequence(sourceImagesRef.current, template, seed);
       imagesRef.current = prepared.images;
       setUsedPhotoCount(prepared.usedCount);
+      setDebugSnapshot(buildVlogDebugSnapshot(sourceImagesRef.current, template, seed, ratio));
     }
     const audio = audioRef.current;
     if (audio) {
@@ -660,6 +668,8 @@ function PreviewStep({ photos, ratio, seed, template, textContent, onTextContent
             <button type="button" onClick={onEditPhotos}>调整照片</button>
           </div>
         </aside>
+
+        <DebugPanel snapshot={debugSnapshot} ready={ready} seed={seed} onSeedChange={onSeedChange} onRegenerate={onRegenerate} />
       </div>
     </section>
   );

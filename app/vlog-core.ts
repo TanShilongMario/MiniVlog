@@ -131,7 +131,7 @@ export const TEMPLATES: VlogTemplate[] = [
     id: "film",
     title: "翻页手记",
     eyebrow: "TRAVEL BOOK",
-    description: "一本圆角网格纸旅行手帐，随音乐翻页，用跨页照片、注脚、页签与贴标收下沿途瞬间。",
+    description: "一本悬浮的旅行画册，跟随音乐翻页，交替呈现跨页与双页照片。",
     music: [
       { title: "African Moon", src: "/music/african-moon.mp3", bpm: 80.75, beatOffset: 0.71 },
       { title: "Another Grappa, Monsieur?", src: "/music/another-grappa.mp3", bpm: 112.35, beatOffset: 0 },
@@ -203,10 +203,21 @@ type ImageFeature = {
   hash: Uint8Array;
 };
 
+export type ImageSequenceDebug = {
+  selectedIndices: number[];
+  omittedIndices: number[];
+  phase: number;
+  rotateBy: number;
+  desiredCount: number;
+  maximumCount: number;
+  minimumCount: number;
+};
+
 export type PreparedImageSequence = {
   images: HTMLImageElement[];
   originalCount: number;
   usedCount: number;
+  debug: ImageSequenceDebug;
 };
 
 function getImageFeature(image: HTMLImageElement): ImageFeature {
@@ -250,8 +261,22 @@ function featureDistance(a: ImageFeature, b: ImageFeature) {
   return (hamming / a.hash.length) * 0.78 + colorDistance * 0.22;
 }
 
+function emptySequenceDebug(count: number): ImageSequenceDebug {
+  return {
+    selectedIndices: Array.from({ length: count }, (_, index) => index),
+    omittedIndices: [],
+    phase: 0,
+    rotateBy: 0,
+    desiredCount: count,
+    maximumCount: count,
+    minimumCount: count,
+  };
+}
+
 export function prepareImageSequence(images: HTMLImageElement[], template: VlogTemplate, seed: number): PreparedImageSequence {
-  if (images.length <= 1) return { images, originalCount: images.length, usedCount: images.length };
+  if (images.length <= 1) {
+    return { images, originalCount: images.length, usedCount: images.length, debug: emptySequenceDebug(images.length) };
+  }
 
   const features = images.map(getImageFeature);
   const minimumCount = Math.min(10, images.length);
@@ -295,10 +320,11 @@ export function prepareImageSequence(images: HTMLImageElement[], template: VlogT
   }
 
   const phase = Math.abs(seed) % Math.max(1, selectedIndices.length);
+  let rotateBy = 0;
   if (phase && selectedIndices.length > 3) {
     // A small rotation changes the opening image between regenerations without
     // destroying the user's broad chronology.
-    const rotateBy = phase % Math.min(3, selectedIndices.length);
+    rotateBy = phase % Math.min(3, selectedIndices.length);
     selectedIndices = [...selectedIndices.slice(rotateBy), ...selectedIndices.slice(0, rotateBy)];
   }
 
@@ -326,7 +352,20 @@ export function prepareImageSequence(images: HTMLImageElement[], template: VlogT
   }
 
   const preparedImages = selectedIndices.map((index) => images[index]);
-  return { images: preparedImages, originalCount: images.length, usedCount: preparedImages.length };
+  return {
+    images: preparedImages,
+    originalCount: images.length,
+    usedCount: preparedImages.length,
+    debug: {
+      selectedIndices,
+      omittedIndices,
+      phase,
+      rotateBy,
+      desiredCount,
+      maximumCount,
+      minimumCount,
+    },
+  };
 }
 
 function mulberry32(seed: number) {
@@ -1023,9 +1062,8 @@ function drawBookFrame(
   height: number,
   progress: number,
   time: number,
-  seed: number,
 ) {
-  const bookCanvas = renderBook3D(images, spreadIndex, width, height, progress, time, seed);
+  const bookCanvas = renderBook3D(images, spreadIndex, width, height, progress, time);
   context.drawImage(bookCanvas, 0, 0, width, height);
 }
 
@@ -1145,7 +1183,6 @@ function drawTemplateTypography(
   time: number,
   seed = 0,
 ) {
-  if (String(template.id) === "film") return;
   if (template.id === "spark") {
     drawSparkTypography(context, width, height, content, time, seed);
     return;
@@ -1364,7 +1401,7 @@ export function renderFrame(
   if (template.layout === "book") {
     const spreadCount = Math.max(1, Math.ceil(images.length / 2));
     const timing = getBeatAlignedClipTiming(spreadCount, safeTime, music);
-    drawBookFrame(context, images, timing.index, width, height, timing.localProgress, safeTime, seed);
+    drawBookFrame(context, images, timing.index, width, height, timing.localProgress, safeTime);
     drawTemplateTypography(context, width, height, template, textContent, safeTime, seed);
     return;
   }
@@ -1403,4 +1440,382 @@ export function renderFrame(
     }
   }
   drawTemplateTypography(context, width, height, template, textContent, safeTime, seed);
+}
+
+export type VlogClipMotion = {
+  clipIndex: number;
+  sourceIndex: number;
+  timeRange: string;
+  mode: string;
+  summary: string;
+  position: string;
+  zoom: string;
+  enter: string;
+  exit: string;
+  details: Array<{ key: string; value: string }>;
+  tune: string[];
+};
+
+export type VlogSparkSlotDebug = {
+  beat: number;
+  imageIndex: number;
+  placement: string;
+  burst: boolean;
+  motion: VlogClipMotion;
+};
+
+export type VlogDebugSnapshot = {
+  seed: number;
+  templateId: TemplateId;
+  templateTitle: string;
+  layout: LayoutMode;
+  ratio: RatioId;
+  exportSize: string;
+  previewSize: string;
+  musicIndex: number;
+  musicTitle: string;
+  bpm: number | null;
+  beatOffset: number | null;
+  motionOffset: number;
+  sequence: ImageSequenceDebug;
+  transition: number;
+  minShotDuration: number;
+  clips: VlogClipMotion[];
+  templateTune: string[];
+  spark?: {
+    totalBeats: number;
+    beatDuration: string;
+    background: string;
+    cornerOrder: string;
+    slots: VlogSparkSlotDebug[];
+  };
+  book?: {
+    spreadCount: number;
+    spreads: Array<{ spreadIndex: number; leftIndex: number; rightIndex: number; variant: number; layoutName: string }>;
+  };
+};
+
+const MOTION_NAMES: Record<MotionType, string> = {
+  "zoom-in": "缓慢放大",
+  "zoom-out": "缓慢缩小",
+  "pan-left": "从右向左平移",
+  "pan-right": "从左向右平移",
+  "pan-up": "从下向上平移",
+  "pan-down": "从上向下平移",
+  "pan-side": "水平随机方向平移",
+};
+
+const ALBUM_VARIANTS = [
+  { name: "左侧滑入", enter: "从左侧约 12% 宽度滑入", exit: "向右侧约 4.5% 退出", position: "水平位移 · 轻微旋转" },
+  { name: "右侧滑入", enter: "从右侧约 12% 宽度滑入", exit: "向左侧约 4.5% 退出", position: "水平位移 · 轻微旋转" },
+  { name: "上方滑入", enter: "从上方约 10% 高度滑入", exit: "向下方约 3.5% 退出", position: "垂直位移 · 轻微旋转" },
+  { name: "左上斜入", enter: "自左上约 7% 斜向进入", exit: "向下约 2.5% 退出", position: "斜向位移" },
+  { name: "右上斜入", enter: "自右上约 7% 斜向进入", exit: "向上约 3% 退出", position: "斜向位移" },
+] as const;
+
+const MINIMAL_VARIANTS = [
+  { name: "左上留白", position: "照片偏左上 · 标记线靠左", zoom: "呼吸缩放（先扩后收）" },
+  { name: "右上留白", position: "照片偏右上 · 标记线靠右", zoom: "呼吸缩放（先收后扩）" },
+  { name: "下方留白", position: "照片偏下 · 标记线靠左", zoom: "呼吸缩放（先扩后收）" },
+  { name: "上方留白", position: "照片偏上 · 标记线靠右", zoom: "呼吸缩放（先收后扩）" },
+] as const;
+
+const BOOK_LAYOUTS = ["跨页大图", "左右上下双图", "左大图 + 右拼贴"] as const;
+
+function makeClipMotion(
+  clipIndex: number,
+  sourceIndex: number,
+  start: number,
+  end: number,
+  fields: Omit<VlogClipMotion, "clipIndex" | "sourceIndex" | "timeRange">,
+): VlogClipMotion {
+  return {
+    clipIndex,
+    sourceIndex,
+    timeRange: `${formatTimeLabel(start)} → ${formatTimeLabel(end)}`,
+    ...fields,
+  };
+}
+
+function describeCoverClipMotion(template: VlogTemplate, seed: number, index: number, start: number, end: number, sourceIndex: number): VlogClipMotion {
+  const random = mulberry32(seed + index * 104729 + template.id.length * 7919);
+  const motionOffset = Math.abs(seed + template.id.length * 7919) % template.motions.length;
+  const motion = template.motions[(index + motionOffset) % template.motions.length];
+  const minZoom = template.zoomMin + random() * 0.012;
+  const maxZoom = template.zoomMax - random() * 0.01;
+  const direction = random() > 0.5 ? 1 : -1;
+  const drift = direction > 0 ? "右/下" : "左/上";
+
+  let position = MOTION_NAMES[motion];
+  let zoom = `${minZoom.toFixed(3)} → ${maxZoom.toFixed(3)}`;
+  if (motion === "zoom-in") zoom = `${minZoom.toFixed(3)} → ${maxZoom.toFixed(3)}（放大）`;
+  if (motion === "zoom-out") zoom = `${maxZoom.toFixed(3)} → ${minZoom.toFixed(3)}（缩小）`;
+  if (motion === "pan-side") position = `${direction > 0 ? "从左向右" : "从右向左"}平移（随机方向）`;
+  if (motion === "zoom-in" || motion === "zoom-out") {
+    position += ` · 中心固定 + 轻微${drift}漂移`;
+  }
+
+  const easing = template.id === "wander" ? "连续漂移（首尾不停顿）" : "ease 缓入缓出";
+  const transitionNote = template.layout === "cinematic"
+    ? `${template.transition}s 交叉叠化`
+    : `${template.transition}s 叠化`;
+
+  return makeClipMotion(index, sourceIndex, start, end, {
+    mode: "全屏 cover 运镜",
+    summary: `${MOTION_NAMES[motion]} · ${easing}`,
+    position,
+    zoom,
+    enter: index === 0 ? "首帧直接出现" : `与前镜头 ${transitionNote} 进入`,
+    exit: index === 0 ? "—" : ` ${transitionNote} 切出`,
+    details: [
+      { key: "motion", value: motion },
+      { key: "motionOffset", value: String(motionOffset) },
+      { key: "panDirection", value: direction > 0 ? "+1" : "-1" },
+      { key: "panStrength", value: String(template.panStrength) },
+      { key: "easing", value: easing },
+    ],
+    tune: ["template.motions", "template.zoomMin / zoomMax", "template.panStrength", "template.transition", "seed（换 seed 改运镜序列）"],
+  });
+}
+
+function describeAlbumClipMotion(seed: number, index: number, start: number, end: number, sourceIndex: number, transition: number): VlogClipMotion {
+  const random = mulberry32(seed + index * 65537 + 29);
+  const variant = Math.floor(random() * 5);
+  const profile = ALBUM_VARIANTS[variant] ?? ALBUM_VARIANTS[0];
+  const sizeVariant = 0.94 + random() * 0.1;
+  const baseRotation = (random() * 2 - 1) * 0.052;
+
+  return makeClipMotion(index, sourceIndex, start, end, {
+    mode: `相纸画册 · 变体 ${variant}`,
+    summary: `${profile.name} · 漂浮相纸`,
+    position: profile.position,
+    zoom: `相纸尺寸 ${(sizeVariant * 100).toFixed(1)}% · 背景模糊 cover`,
+    enter: profile.enter,
+    exit: profile.exit,
+    details: [
+      { key: "variant", value: String(variant) },
+      { key: "rotation", value: `${(baseRotation * (180 / Math.PI)).toFixed(1)}°` },
+      { key: "floatY", value: "镜头内轻微上下漂浮" },
+      { key: "transition", value: `${transition}s 画册叠化` },
+    ],
+    tune: ["drawAlbumFrame 变体 0–4 位移系数", "template.transition", "seed"],
+  });
+}
+
+function describeMinimalClipMotion(seed: number, index: number, start: number, end: number, sourceIndex: number, transition: number): VlogClipMotion {
+  const variant = Math.abs(seed + index * 17) % 4;
+  const profile = MINIMAL_VARIANTS[variant] ?? MINIMAL_VARIANTS[0];
+
+  return makeClipMotion(index, sourceIndex, start, end, {
+    mode: `极简留白 · 变体 ${variant}`,
+    summary: profile.name,
+    position: profile.position,
+    zoom: profile.zoom,
+    enter: "淡入 · 轻微位移动画",
+    exit: `${transition}s 慢叠化切出`,
+    details: [
+      { key: "variant", value: String(variant) },
+      { key: "containScale", value: "完整照片 contain + 1.2% 呼吸" },
+      { key: "marker", value: variant % 2 === 0 ? "左侧竖线标记" : "右侧竖线标记" },
+    ],
+    tune: ["drawMinimalFrame 变体 0–3 偏移表", "template.transition", "seed"],
+  });
+}
+
+function describeBookClipMotion(
+  spreadIndex: number,
+  leftIndex: number,
+  rightIndex: number,
+  variant: number,
+  start: number,
+  end: number,
+  transition: number,
+): VlogClipMotion {
+  const layoutName = BOOK_LAYOUTS[variant] ?? BOOK_LAYOUTS[0];
+  return makeClipMotion(spreadIndex, leftIndex, start, end, {
+    mode: `3D 翻页 · ${layoutName}`,
+    summary: `跨页 #${spreadIndex + 1} · 左 #${leftIndex + 1} / 右 #${rightIndex + 1}`,
+    position: layoutName,
+    zoom: variant === 0 ? "左页 cover 1.015" : "contain 完整显示",
+    enter: "拍点对齐翻页进入",
+    exit: `${transition}s 翻页切出`,
+    details: [
+      { key: "variant", value: String(variant) },
+      { key: "rightPhoto", value: `#${rightIndex + 1}` },
+      { key: "flip", value: "Three.js 书本翻页" },
+    ],
+    tune: ["book-three.ts composeSpread", "music.bpm / beatOffset", "seed"],
+  });
+}
+
+function describeSparkSlotMotion(
+  slot: SparkBeatSlot,
+  beat: number,
+  beatDuration: number,
+  offset: number,
+  template: VlogTemplate,
+  seed: number,
+  sourceIndex: number,
+): VlogClipMotion {
+  const start = offset + beat * beatDuration;
+  const end = start + beatDuration;
+  const placementLabel = formatSparkPlacement(slot.placement);
+  const burst = Boolean(slot.burst);
+
+  if (slot.placement === "full") {
+    const cover = describeCoverClipMotion(template, seed, slot.imageIndex, start, end, sourceIndex);
+    return {
+      ...cover,
+      clipIndex: beat,
+      timeRange: `${formatTimeLabel(start)} → ${formatTimeLabel(end)}`,
+      mode: burst ? "四闪 burst · 全屏" : "全屏 · 拍点硬切",
+      summary: `${burst ? "四连闪 " : ""}${cover.summary}`,
+      enter: burst ? "闪白叠入 + 硬切" : "拍点硬切",
+      exit: "下一拍硬切",
+      details: [
+        ...cover.details,
+        { key: "placement", value: "full" },
+        { key: "burst", value: burst ? "yes" : "no" },
+        { key: "pulse", value: beat % 4 === 0 ? "四拍重音闪白" : "轻脉冲" },
+      ],
+      tune: ["buildSparkBeatSlots 概率", "template.zoomMin / zoomMax", "music.bpm", "seed"],
+    };
+  }
+
+  const placement = slot.placement;
+  return makeClipMotion(beat, sourceIndex, start, end, {
+    mode: burst ? "四闪 burst · 插图" : "插图 · 拍点硬切",
+    summary: `${burst ? "四连闪 " : ""}固定区域 ${(placement.w * 100).toFixed(0)}×${(placement.h * 100).toFixed(0)}%`,
+    position: `区域 (${(placement.x * 100).toFixed(0)}%, ${(placement.y * 100).toFixed(0)}%) · 静止 contain`,
+    zoom: "contain 1.02 · 无运镜",
+    enter: burst ? "闪白叠入" : "拍点切入",
+    exit: "下一拍切出",
+    details: [
+      { key: "placement", value: placementLabel },
+      { key: "burst", value: burst ? "yes" : "no" },
+      { key: "progress", value: slot.progress.toFixed(2) },
+    ],
+    tune: ["randomSparkInset 边距/尺寸", "pickSparkPlacement fullChance", "seed"],
+  });
+}
+
+function templateTuneHints(template: VlogTemplate): string[] {
+  const common = [`${template.id} · minShotDuration ${template.minShotDuration}s`, `transition ${template.transition}s`, "seed", "music[]"];
+  if (template.layout === "cinematic") return [...common, "motions[]", "zoomMin / zoomMax", "panStrength"];
+  if (template.layout === "album") return [...common, "drawAlbumFrame 五变体"];
+  if (template.layout === "minimal") return [...common, "drawMinimalFrame 四变体"];
+  if (template.layout === "beat") return [...common, "buildSparkBeatSlots", "BPM / beatOffset"];
+  if (template.layout === "book") return [...common, "book-three.ts", "BPM 翻页对齐"];
+  return common;
+}
+
+function formatSparkPlacement(placement: SparkPlacement) {
+  if (placement === "full") return "全屏";
+  return `${(placement.w * 100).toFixed(0)}×${(placement.h * 100).toFixed(0)}% @(${(placement.x * 100).toFixed(0)},${(placement.y * 100).toFixed(0)})`;
+}
+
+function formatRgb(color: SparkRgb) {
+  return `rgb(${color.r}, ${color.g}, ${color.b})`;
+}
+
+function formatTimeLabel(seconds: number) {
+  return `${seconds.toFixed(2)}s`;
+}
+
+function cornerLabel(corner: 0 | 1 | 2 | 3) {
+  return ["左上", "右上", "左下", "右下"][corner] ?? String(corner);
+}
+
+export function buildVlogDebugSnapshot(
+  images: HTMLImageElement[],
+  template: VlogTemplate,
+  seed: number,
+  ratio: RatioId,
+): VlogDebugSnapshot {
+  const prepared = prepareImageSequence(images, template, seed);
+  const musicIndex = Math.abs(seed) % template.music.length;
+  const music = template.music[musicIndex] ?? template.music[0];
+  const motionOffset = Math.abs(seed + template.id.length * 7919) % template.motions.length;
+  const exportSize = RATIOS[ratio];
+  const preview = previewDimensions(ratio);
+  const selectedIndices = prepared.debug.selectedIndices;
+  const photoCount = prepared.usedCount;
+  const templateTune = templateTuneHints(template);
+  const base = {
+    seed,
+    templateId: template.id,
+    templateTitle: template.title,
+    layout: template.layout,
+    ratio,
+    exportSize: `${exportSize.width}×${exportSize.height}`,
+    previewSize: `${preview.width}×${preview.height}`,
+    musicIndex,
+    musicTitle: music.title,
+    bpm: music.bpm ?? null,
+    beatOffset: music.beatOffset ?? null,
+    motionOffset,
+    sequence: prepared.debug,
+    transition: template.transition,
+    minShotDuration: template.minShotDuration,
+    templateTune,
+  };
+
+  if (template.layout === "beat") {
+    const bpm = music.bpm ?? 92;
+    const offset = music.beatOffset ?? 0.28;
+    const beatDuration = 60 / bpm;
+    const totalBeats = Math.max(photoCount, Math.floor((VLOG_DURATION - offset) / beatDuration) + 1);
+    const plan = getSparkPlan(prepared.images, seed, bpm, offset, preview.width, preview.height);
+    const slots = plan.slots.map((slot, beat) => {
+      const sourceIndex = selectedIndices[slot.imageIndex] ?? slot.imageIndex;
+      const motion = describeSparkSlotMotion(slot, beat, beatDuration, offset, template, seed, sourceIndex);
+      return {
+        beat,
+        imageIndex: slot.imageIndex,
+        placement: formatSparkPlacement(slot.placement),
+        burst: Boolean(slot.burst),
+        motion,
+      };
+    });
+
+    return {
+      ...base,
+      clips: slots.map((slot) => slot.motion),
+      spark: {
+        totalBeats,
+        beatDuration: `${beatDuration.toFixed(3)}s`,
+        background: formatRgb(plan.background),
+        cornerOrder: sparkCornerOrder(seed).map(cornerLabel).join(" → "),
+        slots,
+      },
+    };
+  }
+
+  if (template.layout === "book") {
+    const spreadCount = Math.max(1, Math.ceil(photoCount / 2));
+    const clipDuration = VLOG_DURATION / spreadCount;
+    const spreads = Array.from({ length: spreadCount }, (_, spreadIndex) => {
+      const leftIndex = selectedIndices[(spreadIndex * 2) % photoCount] ?? 0;
+      const rightIndex = selectedIndices[(spreadIndex * 2 + 1) % photoCount] ?? 0;
+      const variant = spreadIndex % 3;
+      return { spreadIndex, leftIndex, rightIndex, variant, layoutName: BOOK_LAYOUTS[variant] ?? BOOK_LAYOUTS[0] };
+    });
+    const clips = spreads.map(({ spreadIndex, leftIndex, rightIndex, variant }) =>
+      describeBookClipMotion(spreadIndex, leftIndex, rightIndex, variant, spreadIndex * clipDuration, (spreadIndex + 1) * clipDuration, template.transition),
+    );
+
+    return { ...base, clips, book: { spreadCount, spreads } };
+  }
+
+  const clipDuration = VLOG_DURATION / Math.max(1, photoCount);
+  const clips = Array.from({ length: photoCount }, (_, index) => {
+    const sourceIndex = selectedIndices[index] ?? index;
+    const start = index * clipDuration;
+    const end = start + clipDuration;
+    if (template.layout === "album") return describeAlbumClipMotion(seed, index, start, end, sourceIndex, template.transition);
+    if (template.layout === "minimal") return describeMinimalClipMotion(seed, index, start, end, sourceIndex, template.transition);
+    return describeCoverClipMotion(template, seed, index, start, end, sourceIndex);
+  });
+
+  return { ...base, clips };
 }
